@@ -1,184 +1,332 @@
 # DroneStack-Python
+DRONE RACING STACK - FILE STRUCTURE
+====================================
 
-Autonomous drone racing stack for [CosysAirSim](https://github.com/Cosys-Lab/Cosys-AirSim).
+drone_racing_stack/
+│
+├── README.md                          # Project overview, setup instructions
+├── requirements.txt                   # Python dependencies
+├── setup.py                          # Package installation
+├── .gitignore                        # Git ignore rules
+│
+├── config/                           # Configuration files
+│   ├── drone_params.yaml             # Drone physical parameters (mass, inertia)
+│   ├── controller_gains.yaml         # Controller tuning parameters (Kp, Kd, etc.)
+│   ├── estimator_config.yaml         # EKF/VIO parameters, noise models
+│   ├── trajectory_config.yaml        # Planner settings (max_vel, max_acc)
+│   ├── simulation_config.yaml        # AirSim/CosysAirSim settings
+│   └── gates/                        # Gate course definitions
+│       ├── course_easy.yaml
+│       ├── course_medium.yaml
+│       ├── course_hard.yaml
+│       └── competition_track.yaml
+│
+├── drone_stack/                      # Main package
+│   ├── __init__.py                   # Package init, version info
+│   │
+│   ├── core/                         # Core data structures
+│   │   ├── __init__.py
+│   │   ├── pose.py                   # Pose dataclass (position, velocity, orientation)
+│   │   ├── trajectory_state.py       # TrajectoryState dataclass
+│   │   ├── control_output.py         # ControlOutput dataclass
+│   │   └── gate.py                   # Gate dataclass and GateMap class
+│   │
+│   ├── interfaces/                   # Abstract interfaces
+│   │   ├── __init__.py
+│   │   ├── drone_interface.py        # Abstract DroneInterface class
+│   │   ├── estimator_interface.py    # Abstract StateEstimator interface
+│   │   └── planner_interface.py      # Abstract TrajectoryPlanner interface
+│   │
+│   ├── estimation/                   # State estimation modules
+│   │   ├── __init__.py
+│   │   ├── state_estimator.py        # Main StateEstimator class
+│   │   ├── ekf/                      # Extended Kalman Filter
+│   │   │   ├── __init__.py
+│   │   │   ├── ekf_core.py           # EKF prediction/update
+│   │   │   ├── imu_propagation.py    # IMU integration
+│   │   │   └── camera_correction.py  # Visual measurement update
+│   │   ├── visual_odometry/          # Visual odometry module
+│   │   │   ├── __init__.py
+│   │   │   ├── feature_tracker.py    # ORB/SIFT feature tracking
+│   │   │   ├── pose_estimator.py     # Essential matrix, PnP
+│   │   │   └── utils.py              # CV utilities
+│   │   └── rvio_bridge.py            # Optional: ROS bridge to R-VIO
+│   │
+│   ├── planning/                     # Trajectory planning
+│   │   ├── __init__.py
+│   │   ├── trajectory_planner.py     # Main TrajectoryPlanner class
+│   │   ├── trajectory.py             # Trajectory class with sampling
+│   │   ├── min_snap/                 # Minimum-snap planning
+│   │   │   ├── __init__.py
+│   │   │   ├── qp_solver.py          # QP formulation and solver
+│   │   │   ├── polynomial.py         # Polynomial evaluation (Numba JIT)
+│   │   │   └── time_allocation.py    # Segment time allocation
+│   │   ├── waypoint_generator.py     # Convert gates to waypoints
+│   │   └── corridor_constraints.py   # Optional: safe corridor planning
+│   │
+│   ├── control/                      # Control modules
+│   │   ├── __init__.py
+│   │   ├── geometric_controller.py   # SE(3) geometric controller
+│   │   ├── pid_controller.py         # Fallback PID controller
+│   │   ├── attitude_control.py       # Attitude control helpers
+│   │   └── thrust_model.py           # Thrust/torque mapping
+│   │
+│   ├── simulation/                   # Simulation interfaces
+│   │   ├── __init__.py
+│   │   ├── airsim_drone.py           # AirSim implementation
+│   │   ├── cosysairsim_drone.py      # CosysAirSim implementation
+│   │   ├── gazebo_drone.py           # Optional: Gazebo interface
+│   │   └── mock_drone.py             # Mock for unit testing
+│   │
+│   ├── hardware/                     # Real drone interfaces
+│   │   ├── __init__.py
+│   │   ├── mavros_drone.py           # MAVROS/PX4 interface
+│   │   ├── crazyflie_drone.py        # Optional: Crazyflie interface
+│   │   └── sensor_calibration.py     # IMU/camera calibration
+│   │
+│   ├── perception/                   # Perception modules
+│   │   ├── __init__.py
+│   │   ├── gate_detector.py          # Gate detection (CV or scene query)
+│   │   ├── obstacle_detector.py      # Obstacle detection
+│   │   └── depth_estimation.py       # Optional: depth from stereo
+│   │
+│   └── utils/                        # Utilities
+│       ├── __init__.py
+│       ├── math_utils.py             # Rotation matrices, quaternions
+│       ├── logging_utils.py          # Structured logging
+│       ├── plotting.py               # Visualization (matplotlib)
+│       ├── config_loader.py          # YAML config loading
+│       └── coordinate_frames.py      # Frame transformations (NED, ENU, FRD)
+│
+├── scripts/                          # Executable scripts
+│   ├── run_simulation.py             # Main simulation entry point
+│   ├── run_hardware.py               # Main hardware entry point
+│   ├── tune_controller.py            # Interactive gain tuning
+│   ├── test_trajectory.py            # Visualize planned trajectories
+│   ├── calibrate_sensors.py          # Sensor calibration script
+│   ├── benchmark_performance.py      # Measure loop rates, latency
+│   └── replay_logs.py                # Replay and analyze logged data
+│
+├── tests/                            # Unit and integration tests
+│   ├── __init__.py
+│   ├── test_estimator.py             # State estimator tests
+│   ├── test_planner.py               # Trajectory planner tests
+│   ├── test_controller.py            # Controller tests
+│   ├── test_integration.py           # Full stack integration tests
+│   └── fixtures/                     # Test data
+│       ├── sample_imu_data.npy
+│       ├── sample_images/
+│       └── sample_trajectory.pkl
+│
+├── experiments/                      # Experimental code and notebooks
+│   ├── notebooks/                    # Jupyter notebooks
+│   │   ├── ekf_tuning.ipynb
+│   │   ├── trajectory_analysis.ipynb
+│   │   └── controller_comparison.ipynb
+│   ├── parameter_sweep.py            # Automated parameter tuning
+│   └── ablation_study.py             # Component ablation studies
+│
+├── data/                             # Data directory (gitignored)
+│   ├── logs/                         # Flight logs
+│   │   ├── 2026-03-01_sim_run_001/
+│   │   │   ├── states.csv
+│   │   │   ├── controls.csv
+│   │   │   ├── trajectory.csv
+│   │   │   └── metadata.json
+│   │   └── 2026-03-05_hardware_test_001/
+│   ├── calibration/                  # Calibration data
+│   │   ├── camera_intrinsics.yaml
+│   │   ├── imu_noise_params.yaml
+│   │   └── camera_imu_extrinsics.yaml
+│   ├── datasets/                     # External datasets (TII, etc.)
+│   │   └── tii_racing/
+│   └── models/                       # ML models (if using learning)
+│       └── gate_detector_weights.pth
+│
+├── docker/                           # Docker setup for reproducibility
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   └── entrypoint.sh
+│
+├── docs/                             # Documentation
+│   ├── architecture.md               # System architecture overview
+│   ├── api_reference.md              # API documentation
+│   ├── tuning_guide.md               # Controller/planner tuning guide
+│   ├── competition_guide.md          # Competition prep checklist
+│   └── images/                       # Diagrams and images
+│       ├── system_architecture.png
+│       └── control_loop_diagram.png
+│
+└── external/                         # External dependencies (as submodules)
+    ├── fdcl_uav_control/             # git submodule: fdcl-gwu controller
+    ├── fast_racing/                  # git submodule: Fast-Racing (reference)
+    └── rvio/                         # Optional: R-VIO source
 
-## Module Architecture
 
+DETAILED FILE DESCRIPTIONS
+===========================
+
+KEY FILES YOU'LL IMPLEMENT:
+---------------------------
+
+1. drone_stack/core/pose.py
+   - Pose dataclass: position, velocity, orientation (as rotation matrix)
+   - Methods: from_quaternion(), to_quaternion(), transform()
+
+2. drone_stack/estimation/state_estimator.py
+   - StateEstimator class with threading for sensor fusion
+   - update_imu(imu_data): High-frequency IMU integration
+   - update_camera(frame, timestamp): Visual correction
+   - Property: pose -> thread-safe Pose snapshot
+
+3. drone_stack/planning/trajectory_planner.py
+   - TrajectoryPlanner.plan(start, gates) -> Trajectory
+   - Builds and solves min-snap QP problem
+   - Returns Trajectory object with polynomial coefficients
+
+4. drone_stack/planning/trajectory.py
+   - Trajectory class stores coefficients and segment times
+   - sample(t) -> TrajectoryState (Numba-optimized)
+   - duration property
+
+5. drone_stack/control/geometric_controller.py
+   - GeometricController class (adapted from fdcl-gwu)
+   - compute(desired, estimated) -> ControlOutput
+   - Implements SE(3) tracking control law
+
+6. drone_stack/simulation/airsim_drone.py
+   - AirSimDrone implements DroneInterface
+   - get_imu(), get_camera(), send_control()
+   - Handles AirSim API calls and frame conversions
+
+7. scripts/run_simulation.py
+   - Main orchestrator script
+   - Sets up threads, runs control loop
+   - Matches structure from your original README
+
+
+CONFIGURATION FILES:
+-------------------
+
+config/drone_params.yaml:
+```yaml
+mass: 0.5  # kg
+inertia: [0.0025, 0.0025, 0.0045]  # kg⋅m²
+max_thrust: 10.0  # N
+rotor_radius: 0.1  # m
 ```
-drone_stack/
-├── __init__.py          # re-exports all public classes
-├── gate_map.py          # Gate positions loaded from YAML
-├── state_estimator.py   # Thread-safe IMU/camera pose estimator
-├── trajectory.py        # Min-snap trajectory planner
-├── controller.py        # Geometric controller (SE3)
-└── main.py              # Orchestrator + control loop
+
+config/controller_gains.yaml:
+```yaml
+position:
+  kp: 7.0
+  kd: 2.5
+attitude:
+  kp: 12.0
+max_thrust_ratio: 2.0
+max_tilt_angle: 60.0  # degrees
 ```
 
-## Data Flow
-
-```
-Camera ──┐
-         ├──► StateEstimator ──► Pose ──────────────────────────┐
-IMU ─────┘                                                      ▼
-GateMap ──► TrajectoryPlanner ──► Trajectory.sample(t) ──► GeometricController ──► moveByAngleRatesThrottleAsync
-             (run once at start)      (100 Hz)
+config/trajectory_config.yaml:
+```yaml
+avg_speed: 5.0  # m/s (aggressive for racing)
+max_velocity: 10.0  # m/s
+max_acceleration: 40.0  # m/s² (~4g)
+polynomial_order: 7  # min-snap uses degree-7
 ```
 
-## Class Interfaces
-
-### `gate_map.py`
-
-```python
-@dataclass
-class Gate:
-    name: str
-    position: np.ndarray   # [x, y, z] metres, world frame
-    heading: float = 0.0   # gate normal direction, radians
-
-class GateMap:
-    def __init__(self, yaml_path: str): ...
-    def gates(self) -> list[Gate]: ...
-    def nearest_gate(self, pos: np.ndarray) -> Gate: ...
-```
-
-Expected YAML schema (`gate_course.yaml`):
-
+config/gates/competition_track.yaml:
 ```yaml
 gates:
   - name: gate_1
     position: [5.0, 0.0, -1.5]
     heading: 0.0
+    width: 1.2
+    height: 1.2
   - name: gate_2
     position: [10.0, 3.0, -1.5]
     heading: 0.785
+    width: 1.2
+    height: 1.2
 ```
 
-### `state_estimator.py`
 
+ENTRY POINT STRUCTURE:
+----------------------
+
+scripts/run_simulation.py structure:
 ```python
-@dataclass
-class Pose:
-    position: np.ndarray     # [x, y, z] metres
-    velocity: np.ndarray     # [x_dot, y_dot, z_dot] m/s
-    orientation: np.ndarray  # 3×3 rotation matrix (world ← body)
-
-class StateEstimator:
-    """Fuses camera + IMU to estimate pose. Thread-safe."""
-
-    def update_imu(self, imu_data): ...    # ~400 Hz; integrates gyro + accel
-    def update_camera(self, frame): ...    # ~30 Hz;  VIO correction (stub)
-
-    @property
-    def pose(self) -> Pose: ...            # consistent snapshot, safe from any thread
-```
-
-### `trajectory.py`
-
-```python
-@dataclass
-class TrajectoryState:
-    position: np.ndarray      # [x, y, z] metres
-    velocity: np.ndarray      # m/s
-    acceleration: np.ndarray  # m/s²
-    yaw: float                # desired heading, radians
-
-class TrajectoryPlanner:
-    """Min-snap planner: degree-7 polynomial per segment, solved as a linear system."""
-
-    def __init__(self, avg_speed: float = 3.0): ...
-    def plan(self, start: np.ndarray, gates: list[Gate]) -> Trajectory: ...
-
-class Trajectory:
-    duration: float
-
-    def sample(self, t: float) -> TrajectoryState: ...
-```
-
-### `controller.py`
-
-```python
-@dataclass
-class ControlOutput:
-    roll_rate: float   # rad/s, body x
-    pitch_rate: float  # rad/s, body y
-    yaw_rate: float    # rad/s, body z
-    throttle: float    # [0, 1]
-
-class GeometricController:
-    """SE3 geometric controller.
-    Pipeline: position error → desired thrust vector → attitude error → angular rates.
-    """
-
-    def __init__(self, mass: float, Kp: float, Kd: float,
-                 Kp_att: float = 10.0, max_thrust_ratio: float = 2.0): ...
-
-    def compute(self, desired: TrajectoryState, estimated: Pose) -> ControlOutput: ...
-```
-
-## Main Loop
-
-```python
-# main.py
-import threading, time
-import cosysairsim as airsim
-
-CONTROL_HZ = 100
-IMU_HZ     = 400
-CAMERA_HZ  = 30
+import threading
+import time
+from drone_stack.core.gate import GateMap
+from drone_stack.estimation.state_estimator import StateEstimator
+from drone_stack.planning.trajectory_planner import TrajectoryPlanner
+from drone_stack.control.geometric_controller import GeometricController
+from drone_stack.simulation.airsim_drone import AirSimDrone
+from drone_stack.utils.config_loader import load_config
 
 def main():
-    client = airsim.MultirotorClient()
-    client.confirmConnection()
-    client.enableApiControl(True)
-    client.armDisarm(True)
-
-    # ── One-time setup ────────────────────────────────────────────────
-    gate_map   = GateMap("gate_course.yaml")
-    estimator  = StateEstimator()
-    planner    = TrajectoryPlanner(avg_speed=3.0)
-    controller = GeometricController(mass=0.5, Kp=4.0, Kd=2.0)
-
-    trajectory = planner.plan(
-        start=np.array([0.0, 0.0, -1.5]),
-        gates=gate_map.gates(),
-    )
-
-    # ── Sensor threads ────────────────────────────────────────────────
-    running = threading.Event()
-    running.set()
-
-    threading.Thread(target=imu_loop,    daemon=True).start()
-    threading.Thread(target=camera_loop, daemon=True).start()
-
-    # ── Control loop ──────────────────────────────────────────────────
-    client.takeoffAsync().join()
-    t_start = time.monotonic()
-
-    try:
-        while True:
-            t         = time.monotonic() - t_start
-            desired   = trajectory.sample(t)
-            estimated = estimator.pose
-            cmd       = controller.compute(desired, estimated)
-
-            client.moveByAngleRatesThrottleAsync(
-                cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate,
-                cmd.throttle, duration=1 / CONTROL_HZ,
-            )
-
-            if t >= trajectory.duration:
-                break
-            time.sleep(1 / CONTROL_HZ)
-    finally:
-        running.clear()
-        client.hoverAsync().join()
-        client.landAsync().join()
-        client.armDisarm(False)
-        client.enableApiControl(False)
+    # Load configs
+    drone_config = load_config('config/drone_params.yaml')
+    controller_config = load_config('config/controller_gains.yaml')
+    gates = GateMap('config/gates/competition_track.yaml')
+    
+    # Initialize components
+    drone = AirSimDrone()
+    estimator = StateEstimator(config=...)
+    planner = TrajectoryPlanner(config=...)
+    controller = GeometricController(**controller_config)
+    
+    # Plan trajectory (once at start)
+    trajectory = planner.plan(start=..., gates=gates.gates())
+    
+    # Start sensor threads
+    sensor_threads = start_sensor_threads(drone, estimator)
+    
+    # Main control loop (100 Hz)
+    run_control_loop(drone, estimator, trajectory, controller)
+    
+    # Cleanup
+    stop_threads(sensor_threads)
+    drone.land()
 ```
 
-## Running
 
-```bash
-python -m drone_stack.main
+DEVELOPMENT WORKFLOW:
+--------------------
+
+Week 1-2: Build foundation
+  1. Implement core data structures (drone_stack/core/)
+  2. Build AirSim interface (drone_stack/simulation/airsim_drone.py)
+  3. Implement basic state estimator (drone_stack/estimation/)
+  4. Write run_simulation.py to test basic waypoint following
+
+Week 3-4: Add planning and control
+  5. Implement min-snap planner (drone_stack/planning/)
+  6. Integrate geometric controller (drone_stack/control/)
+  7. Test full pipeline in simulation
+
+Week 5: Optimization and testing
+  8. Add Numba JIT to trajectory sampling
+  9. Tune controller gains
+  10. Stress test with aggressive trajectories
+
+Week 6: Real hardware
+  11. Implement hardware interface (drone_stack/hardware/mavros_drone.py)
+  12. Run scripts/run_hardware.py
+  13. Progressive testing and tuning
+
+
+DEPENDENCIES (requirements.txt):
+--------------------------------
+numpy>=1.24.0
+scipy>=1.10.0
+opencv-python>=4.8.0
+pyyaml>=6.0
+numba>=0.57.0
+matplotlib>=3.7.0
+airsim>=1.8.1  # or cosysairsim
+pandas>=2.0.0  # for logging
+pytest>=7.4.0  # for testing
+black>=23.0.0  # code formatting
 ```
