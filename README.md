@@ -1,136 +1,184 @@
 # DroneStack-Python
 
- Module Architecture
+Autonomous drone racing stack for [CosysAirSim](https://github.com/Cosys-Lab/Cosys-AirSim).
 
-  drone_stack/
-  ├── state_estimator.py   # VIO: camera + IMU → pose estimate
-  ├── trajectory.py        # Min-snap planner (what you have in trajectory.ipynb)
-  ├── controller.py        # Geometric controller: pose error → rates + throttle
-  ├── gate_map.py          # Known gate positions, coordinate transforms
-  └── main.py              # Orchestrator + control loop
+## Module Architecture
 
-  Data Flow
+```
+drone_stack/
+├── __init__.py          # re-exports all public classes
+├── gate_map.py          # Gate positions loaded from YAML
+├── state_estimator.py   # Thread-safe IMU/camera pose estimator
+├── trajectory.py        # Min-snap trajectory planner
+├── controller.py        # Geometric controller (SE3)
+└── main.py              # Orchestrator + control loop
+```
 
-  Camera ──┐
-           ├──► StateEstimator ──► estimated_pose ──┐
-  IMU ─────┘                                        │
-                                                    ▼
-  GateMap ──► TrajectoryPlanner ──► desired_state ──► Controller ──► moveByAngleRatesThrottleAsync
-                 (run once at start)
+## Data Flow
 
-  Class Interfaces
+```
+Camera ──┐
+         ├──► StateEstimator ──► Pose ──────────────────────────┐
+IMU ─────┘                                                      ▼
+GateMap ──► TrajectoryPlanner ──► Trajectory.sample(t) ──► GeometricController ──► moveByAngleRatesThrottleAsync
+             (run once at start)      (100 Hz)
+```
 
-  # state_estimator.py
-  class StateEstimator:
-      """Fuses camera + IMU to estimate pose. Runs in its own thread."""
+## Class Interfaces
 
-      def update_imu(self, imu_data): ...        # called at ~400Hz
-      def update_camera(self, frame): ...         # called at ~30Hz
+### `gate_map.py`
 
-      @property
-      def pose(self) -> Pose:
-          """Latest estimated position + orientation + velocity."""
-          ...
+```python
+@dataclass
+class Gate:
+    name: str
+    position: np.ndarray   # [x, y, z] metres, world frame
+    heading: float = 0.0   # gate normal direction, radians
 
-  # gate_map.py
-  class GateMap:
-      """Known gate positions in world frame."""
+class GateMap:
+    def __init__(self, yaml_path: str): ...
+    def gates(self) -> list[Gate]: ...
+    def nearest_gate(self, pos: np.ndarray) -> Gate: ...
+```
 
-      def __init__(self, yaml_path: str): ...
-      def gates(self) -> list[Gate]: ...
-      def nearest_gate(self, pos: np.ndarray) -> Gate: ...
+Expected YAML schema (`gate_course.yaml`):
 
-  # trajectory.py  (refactored from your notebook)
-  class TrajectoryPlanner:
-      """Computes min-snap trajectory given gate positions + start pose."""
+```yaml
+gates:
+  - name: gate_1
+    position: [5.0, 0.0, -1.5]
+    heading: 0.0
+  - name: gate_2
+    position: [10.0, 3.0, -1.5]
+    heading: 0.785
+```
 
-      def plan(self, start: np.ndarray, gates: list[Gate]) -> Trajectory: ...
+### `state_estimator.py`
 
-  class Trajectory:
-      def sample(self, t: float) -> TrajectoryState:
-          """Returns desired pos, vel, accel at time t."""
-          ...
+```python
+@dataclass
+class Pose:
+    position: np.ndarray     # [x, y, z] metres
+    velocity: np.ndarray     # [x_dot, y_dot, z_dot] m/s
+    orientation: np.ndarray  # 3×3 rotation matrix (world ← body)
 
-  # controller.py
-  class GeometricController:
-      """Converts trajectory error into angular rate + throttle commands."""
+class StateEstimator:
+    """Fuses camera + IMU to estimate pose. Thread-safe."""
 
-      def __init__(self, mass: float, Kp: float, Kd: float): ...
+    def update_imu(self, imu_data): ...    # ~400 Hz; integrates gyro + accel
+    def update_camera(self, frame): ...    # ~30 Hz;  VIO correction (stub)
 
-      def compute(self,
-                  desired: TrajectoryState,
-                  estimated: Pose) -> ControlOutput:
-          # 1. Position + velocity error
-          # 2. Desired acceleration (feedforward from trajectory + feedback from error)
-          # 3. Thrust vector decomposition → desired attitude
-          # 4. Attitude error → angular rates
-          ...
+    @property
+    def pose(self) -> Pose: ...            # consistent snapshot, safe from any thread
+```
 
-  Main Loop
+### `trajectory.py`
 
-  # main.py
-  import threading, time
-  import cosysairsim as airsim
+```python
+@dataclass
+class TrajectoryState:
+    position: np.ndarray      # [x, y, z] metres
+    velocity: np.ndarray      # m/s
+    acceleration: np.ndarray  # m/s²
+    yaw: float                # desired heading, radians
 
-  CONTROL_HZ = 100
-  IMU_HZ     = 400
-  CAMERA_HZ  = 30
+class TrajectoryPlanner:
+    """Min-snap planner: degree-7 polynomial per segment, solved as a linear system."""
 
-  def main():
-      client = airsim.MultirotorClient()
-      client.confirmConnection()
-      client.enableApiControl(True)
-      client.armDisarm(True)
+    def __init__(self, avg_speed: float = 3.0): ...
+    def plan(self, start: np.ndarray, gates: list[Gate]) -> Trajectory: ...
 
-      # ── One-time setup ────────────────────────────────────────────────
-      gate_map   = GateMap("gate_course.yaml")
-      estimator  = StateEstimator()
-      planner    = TrajectoryPlanner()
-      controller = GeometricController(mass=0.5, Kp=4.0, Kd=2.0)
+class Trajectory:
+    duration: float
 
-      trajectory = planner.plan(
-          start=np.array([0, 0, -1.5]),
-          gates=gate_map.gates()
-      )
+    def sample(self, t: float) -> TrajectoryState: ...
+```
 
-      # ── Sensor threads ────────────────────────────────────────────────
-      def imu_loop():
-          while running:
-              imu = client.getImuData()
-              estimator.update_imu(imu)
-              time.sleep(1 / IMU_HZ)
+### `controller.py`
 
-      def camera_loop():
-          while running:
-              frame = client.simGetImages([...])[0]
-              estimator.update_camera(frame)
-              time.sleep(1 / CAMERA_HZ)
+```python
+@dataclass
+class ControlOutput:
+    roll_rate: float   # rad/s, body x
+    pitch_rate: float  # rad/s, body y
+    yaw_rate: float    # rad/s, body z
+    throttle: float    # [0, 1]
 
-      running = True
-      threading.Thread(target=imu_loop,    daemon=True).start()
-      threading.Thread(target=camera_loop, daemon=True).start()
+class GeometricController:
+    """SE3 geometric controller.
+    Pipeline: position error → desired thrust vector → attitude error → angular rates.
+    """
 
-      # ── Control loop ──────────────────────────────────────────────────
-      client.takeoffAsync().join()
-      t_start = time.time()
+    def __init__(self, mass: float, Kp: float, Kd: float,
+                 Kp_att: float = 10.0, max_thrust_ratio: float = 2.0): ...
 
-      while True:
-          t = time.time() - t_start
-          desired   = trajectory.sample(t)
-          estimated = estimator.pose
-          cmd       = controller.compute(desired, estimated)
+    def compute(self, desired: TrajectoryState, estimated: Pose) -> ControlOutput: ...
+```
 
-          client.moveByAngleRatesThrottleAsync(
-              cmd.roll_rate,
-              cmd.pitch_rate,
-              cmd.yaw_rate,
-              cmd.throttle,
-              duration=1 / CONTROL_HZ,
-          )
+## Main Loop
 
-          if t >= trajectory.duration:
-              break
+```python
+# main.py
+import threading, time
+import cosysairsim as airsim
 
-          time.sleep(1 / CONTROL_HZ)
+CONTROL_HZ = 100
+IMU_HZ     = 400
+CAMERA_HZ  = 30
 
-  main()
+def main():
+    client = airsim.MultirotorClient()
+    client.confirmConnection()
+    client.enableApiControl(True)
+    client.armDisarm(True)
+
+    # ── One-time setup ────────────────────────────────────────────────
+    gate_map   = GateMap("gate_course.yaml")
+    estimator  = StateEstimator()
+    planner    = TrajectoryPlanner(avg_speed=3.0)
+    controller = GeometricController(mass=0.5, Kp=4.0, Kd=2.0)
+
+    trajectory = planner.plan(
+        start=np.array([0.0, 0.0, -1.5]),
+        gates=gate_map.gates(),
+    )
+
+    # ── Sensor threads ────────────────────────────────────────────────
+    running = threading.Event()
+    running.set()
+
+    threading.Thread(target=imu_loop,    daemon=True).start()
+    threading.Thread(target=camera_loop, daemon=True).start()
+
+    # ── Control loop ──────────────────────────────────────────────────
+    client.takeoffAsync().join()
+    t_start = time.monotonic()
+
+    try:
+        while True:
+            t         = time.monotonic() - t_start
+            desired   = trajectory.sample(t)
+            estimated = estimator.pose
+            cmd       = controller.compute(desired, estimated)
+
+            client.moveByAngleRatesThrottleAsync(
+                cmd.roll_rate, cmd.pitch_rate, cmd.yaw_rate,
+                cmd.throttle, duration=1 / CONTROL_HZ,
+            )
+
+            if t >= trajectory.duration:
+                break
+            time.sleep(1 / CONTROL_HZ)
+    finally:
+        running.clear()
+        client.hoverAsync().join()
+        client.landAsync().join()
+        client.armDisarm(False)
+        client.enableApiControl(False)
+```
+
+## Running
+
+```bash
+python -m drone_stack.main
+```
