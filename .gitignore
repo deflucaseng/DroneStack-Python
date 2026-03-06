@@ -1,1 +1,5 @@
 .claude/
+todo.txt/
+drone_stack.egg-info/
+dsenv/
+__pycache__/

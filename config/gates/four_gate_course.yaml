@@ -1,0 +1,44 @@
+# Gate course configuration
+# Coordinate frame: AirSim NED — x=North, y=East, z=Down (positive = below origin)
+# Positions in metres, sourced from simGetObjectPose on the actual gate objects
+# (StaticMeshActor_7, _2, _5, _9, _11 ordered west→east by X)
+# yaw=0 → gate normal points North (+X), i.e. the drone flies through along the X axis
+
+trajectory:
+  # Used only for polynomial time allocation — set to the drone's actual physical limits.
+  # Making these arbitrarily large collapses all segment times to near-zero and
+  # breaks the polynomial solver. Keep them realistic.
+  max_velocity: 3.0        # m/s  — physical capability for time allocation
+  max_acceleration: 6.0    # m/s² — physical capability for time allocation
+
+  # Commanded flight speed passed to moveOnPathAsync. Independent of the polynomial —
+  # increase this freely up to whatever the drone's physics allow in AirSim.
+  flight_speed: 6.0       # m/s
+
+  approach_distance: 2.0  # m before gate centre
+  exit_distance: 2.0      # m after gate centre
+
+gates:
+  - id: 1
+    position: {x: 14.5, y: 1.7,  z: -0.5}
+    yaw: 0.0
+    width: 0.9
+    height: 0.9
+
+  - id: 2
+    position: {x: 42.0, y: -3.3, z: -1.3}
+    yaw: 0.0
+    width: 0.9
+    height: 0.9
+
+  - id: 3
+    position: {x: 61.0, y: -3.3, z: 0.25}
+    yaw: 0.0
+    width: 0.9
+    height: 0.9
+
+  - id: 4
+    position: {x: 89.0,  y: -2.0, z: -1.3}
+    yaw: 0.0
+    width: 0.9
+    height: 0.9

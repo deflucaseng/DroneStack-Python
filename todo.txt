@@ -1,0 +1,532 @@
+
+
+DRONE RACING STACK - IMPLEMENTATION ORDER
+==========================================
+
+This guide provides the EXACT order to implement components, from absolute
+basics to competition-ready stack. Each phase builds on the previous one.
+
+PHILOSOPHY: Build incrementally, test frequently, fly early and often.
+
+
+
+═══════════════════════════════════════════════════════════════════
+PHASE 3: STATE ESTIMATION FOUNDATION (Days 6-8)
+═══════════════════════════════════════════════════════════════════
+
+
+
+
+☐ 3.5. Create IMU thread in test script
+   
+   ```python
+   # scripts/test_estimation.py
+   import threading
+   
+   def imu_loop(drone, estimator):
+       while running:
+           imu_data = drone.get_imu()
+           estimator.update_imu(imu_data)
+           time.sleep(1/400)  # 400 Hz
+   
+   # Start thread
+   imu_thread = threading.Thread(target=imu_loop, daemon=True)
+   imu_thread.start()
+   
+   # In control loop, use estimator.pose instead of drone.get_state()
+   ```
+
+☐ 3.6. TEST: Compare estimated state vs ground truth
+   Log both and plot the error.
+
+CHECKPOINT: Is your estimator drift < 10cm over 10 seconds of flight?
+
+
+═══════════════════════════════════════════════════════════════════
+PHASE 4: GEOMETRIC CONTROLLER (Days 9-11)
+═══════════════════════════════════════════════════════════════════
+
+Goal: Replace PID with proper SE(3) geometric controller.
+
+☐ 4.1. Study the fdcl-gwu implementation
+   ```bash
+   git clone https://github.com/fdcl-gwu/uav_geometric_control
+   # Study the Python version in python/
+   ```
+
+☐ 4.2. Implement geometric controller (drone_stack/control/geometric_controller.py)
+   
+   This is complex! Key steps:
+   1. Compute desired thrust vector from position error
+   2. Compute desired attitude from thrust vector
+   3. Compute attitude error
+   4. Compute angular rate commands
+   
+   ```python
+   # drone_stack/control/geometric_controller.py
+   import numpy as np
+   from drone_stack.core.pose import ControlOutput
+   
+   class GeometricController:
+       def __init__(self, mass, Kp, Kd, Kp_att):
+           self.mass = mass
+           self.Kp = Kp  # Position gain
+           self.Kd = Kd  # Velocity gain
+           self.Kp_att = Kp_att  # Attitude gain
+           self.g = 9.81
+       
+       def compute(self, desired_state, estimated_pose):
+           """Compute control from desired trajectory state and current pose."""
+           
+           # 1. Position control -> desired thrust
+           pos_error = desired_state.position - estimated_pose.position
+           vel_error = desired_state.velocity - estimated_pose.velocity
+           
+           desired_accel = (
+               self.Kp * pos_error + 
+               self.Kd * vel_error + 
+               desired_state.acceleration + 
+               np.array([0, 0, self.g])
+           )
+           
+           # 2. Thrust magnitude and direction
+           thrust = self.mass * np.linalg.norm(desired_accel)
+           z_body_desired = desired_accel / np.linalg.norm(desired_accel)
+           
+           # 3. Compute desired rotation matrix
+           # (This is the tricky part - see Lee et al. paper)
+           R_desired = self._compute_desired_rotation(z_body_desired, desired_state.yaw)
+           
+           # 4. Attitude error
+           R_current = estimated_pose.orientation
+           R_error = 0.5 * vee(R_desired.T @ R_current - R_current.T @ R_desired)
+           
+           # 5. Angular rate commands
+           angular_rates = self.Kp_att * R_error
+           
+           # 6. Convert to roll/pitch/yaw rates and throttle
+           throttle = thrust / (self.mass * self.g)
+           
+           return ControlOutput(
+               roll_rate=angular_rates[0],
+               pitch_rate=angular_rates[1],
+               yaw_rate=angular_rates[2],
+               throttle=throttle
+           )
+       
+       def _compute_desired_rotation(self, z_body, yaw):
+           """Compute desired rotation matrix from desired z-axis and yaw."""
+           # TODO: Implement this carefully
+           # See Lee et al. paper or fdcl-gwu code
+           pass
+   ```
+
+☐ 4.3. Create controller configuration (config/controller_gains.yaml)
+   
+   ```yaml
+   mass: 0.5  # kg
+   position:
+     kp: 6.0
+     kd: 2.5
+   attitude:
+     kp: 10.0
+   max_thrust_ratio: 2.0
+   ```
+
+☐ 4.4. Update test script to use geometric controller
+
+☐ 4.5. TEST: Compare PID vs Geometric controller performance
+
+CHECKPOINT: Does geometric controller track better than PID?
+
+
+═══════════════════════════════════════════════════════════════════
+PHASE 5: TRAJECTORY PLANNING (Days 12-15)
+═══════════════════════════════════════════════════════════════════
+
+Goal: Minimum-snap trajectory generation through gates.
+
+☐ 5.1. Understand minimum-snap math
+   Resources:
+   - Fast-Racing paper and code
+   - Quadcopter_SimCon implementation
+   - Minimum snap tutorial: https://arxiv.org/abs/1109.0994
+
+☐ 5.2. Implement polynomial representation (drone_stack/planning/polynomial.py)
+   
+   ```python
+   # drone_stack/planning/polynomial.py
+   from numba import jit
+   import numpy as np
+   
+   @jit(nopython=True)
+   def evaluate_polynomial(coeffs, t, order=7):
+       """Evaluate position, velocity, acceleration from polynomial.
+       
+       coeffs: (order+1,) coefficients for x, y, or z
+       t: time in segment
+       """
+       # Position: p(t) = c0 + c1*t + c2*t^2 + ... + c7*t^7
+       pos = 0.0
+       vel = 0.0
+       acc = 0.0
+       
+       for i in range(order + 1):
+           pos += coeffs[i] * (t ** i)
+           if i > 0:
+               vel += i * coeffs[i] * (t ** (i-1))
+           if i > 1:
+               acc += i * (i-1) * coeffs[i] * (t ** (i-2))
+       
+       return pos, vel, acc
+   ```
+
+☐ 5.3. Implement QP solver (drone_stack/planning/min_snap/qp_solver.py)
+   
+   This is the hardest part! You're solving:
+   
+   minimize: ∫ ||d^4 x/dt^4||^2 dt  (minimize snap)
+   subject to: 
+   - waypoint constraints (position)
+   - continuity constraints (velocity, acceleration, jerk)
+   - initial/final conditions
+   
+   ```python
+   # drone_stack/planning/min_snap/qp_solver.py
+   import numpy as np
+   from scipy.linalg import solve
+   
+   class MinSnapQPSolver:
+       def __init__(self, order=7):
+           self.order = order
+       
+       def solve(self, waypoints, segment_times):
+           """Solve min-snap QP for given waypoints.
+           
+           Returns: coefficients for each segment
+           """
+           n_segments = len(waypoints) - 1
+           n_coeffs = (self.order + 1) * n_segments
+           
+           # Build cost matrix Q (minimize snap)
+           Q = self._build_cost_matrix(segment_times)
+           
+           # Build constraint matrices A, b
+           A, b = self._build_constraints(waypoints, segment_times)
+           
+           # Solve QP: min x^T Q x subject to Ax = b
+           # This simplifies to solving: (A^T A)^-1 A^T b with Q weighting
+           coeffs = solve(A.T @ A + 0.001 * Q, A.T @ b)
+           
+           return coeffs.reshape((n_segments, self.order + 1))
+       
+       def _build_cost_matrix(self, segment_times):
+           """Build snap cost matrix."""
+           # TODO: This is complex but well-documented in papers
+           pass
+       
+       def _build_constraints(self, waypoints, segment_times):
+           """Build equality constraint matrices."""
+           # TODO: Waypoint constraints + continuity constraints
+           pass
+   ```
+
+☐ 5.4. Implement trajectory class (drone_stack/planning/trajectory.py)
+   
+   ```python
+   # drone_stack/planning/trajectory.py
+   from drone_stack.core.pose import TrajectoryState
+   from drone_stack.planning.polynomial import evaluate_polynomial
+   
+   class Trajectory:
+       def __init__(self, coeffs_x, coeffs_y, coeffs_z, segment_times):
+           """Store polynomial coefficients for each axis."""
+           self.coeffs_x = coeffs_x
+           self.coeffs_y = coeffs_y
+           self.coeffs_z = coeffs_z
+           self.segment_times = segment_times
+           self.duration = sum(segment_times)
+       
+       def sample(self, t):
+           """Sample trajectory at time t."""
+           # Find which segment we're in
+           segment_idx, t_in_segment = self._find_segment(t)
+           
+           # Evaluate polynomials
+           x, vx, ax = evaluate_polynomial(self.coeffs_x[segment_idx], t_in_segment)
+           y, vy, ay = evaluate_polynomial(self.coeffs_y[segment_idx], t_in_segment)
+           z, vz, az = evaluate_polynomial(self.coeffs_z[segment_idx], t_in_segment)
+           
+           return TrajectoryState(
+               position=np.array([x, y, z]),
+               velocity=np.array([vx, vy, vz]),
+               acceleration=np.array([ax, ay, az]),
+               yaw=0.0  # TODO: Compute from velocity direction
+           )
+       
+       def _find_segment(self, t):
+           """Find which segment and local time."""
+           cumsum = 0.0
+           for i, dt in enumerate(self.segment_times):
+               if t < cumsum + dt:
+                   return i, t - cumsum
+               cumsum += dt
+           return len(self.segment_times) - 1, self.segment_times[-1]
+   ```
+
+☐ 5.5. Implement trajectory planner (drone_stack/planning/trajectory_planner.py)
+   
+   ```python
+   # drone_stack/planning/trajectory_planner.py
+   from drone_stack.planning.min_snap.qp_solver import MinSnapQPSolver
+   from drone_stack.planning.trajectory import Trajectory
+   
+   class TrajectoryPlanner:
+       def __init__(self, config):
+           self.avg_speed = config['avg_speed']
+           self.qp_solver = MinSnapQPSolver(order=7)
+       
+       def plan(self, start, gates):
+           """Plan trajectory from start through gates."""
+           # Build waypoints
+           waypoints = [start]
+           waypoints.extend([gate.position for gate in gates])
+           
+           # Allocate time for each segment
+           segment_times = self._allocate_time(waypoints)
+           
+           # Solve min-snap for each axis
+           coeffs_x = self.qp_solver.solve([w[0] for w in waypoints], segment_times)
+           coeffs_y = self.qp_solver.solve([w[1] for w in waypoints], segment_times)
+           coeffs_z = self.qp_solver.solve([w[2] for w in waypoints], segment_times)
+           
+           return Trajectory(coeffs_x, coeffs_y, coeffs_z, segment_times)
+       
+       def _allocate_time(self, waypoints):
+           """Allocate time for each segment based on distance."""
+           times = []
+           for i in range(len(waypoints) - 1):
+               dist = np.linalg.norm(waypoints[i+1] - waypoints[i])
+               times.append(dist / self.avg_speed)
+           return times
+   ```
+
+☐ 5.6. Create trajectory config (config/trajectory_config.yaml)
+   
+   ```yaml
+   avg_speed: 3.0  # m/s (conservative to start)
+   max_velocity: 8.0
+   max_acceleration: 30.0
+   polynomial_order: 7
+   ```
+
+☐ 5.7. TEST: Generate and visualize trajectories
+   
+   ```python
+   # scripts/test_trajectory.py
+   import matplotlib.pyplot as plt
+   from mpl_toolkits.mplot3d import Axes3D
+   
+   # Generate trajectory
+   trajectory = planner.plan(start, gates.gates())
+   
+   # Sample at many points
+   times = np.linspace(0, trajectory.duration, 1000)
+   positions = []
+   for t in times:
+       state = trajectory.sample(t)
+       positions.append(state.position)
+   positions = np.array(positions)
+   
+   # Plot 3D trajectory
+   fig = plt.figure()
+   ax = fig.add_subplot(111, projection='3d')
+   ax.plot(positions[:, 0], positions[:, 1], positions[:, 2])
+   plt.show()
+   ```
+
+☐ 5.8. TEST: Fly the trajectory!
+   Now your scripts/run_simulation.py should work end-to-end.
+
+CHECKPOINT: Can you fly a smooth trajectory through 4 gates?
+
+
+═══════════════════════════════════════════════════════════════════
+PHASE 6: INTEGRATION & MAIN LOOP (Day 16-17)
+═══════════════════════════════════════════════════════════════════
+
+Goal: Put everything together in final scripts/run_simulation.py
+
+☐ 6.1. Implement config loader (drone_stack/utils/config_loader.py)
+   
+   ```python
+   import yaml
+   
+   def load_config(yaml_path):
+       with open(yaml_path, 'r') as f:
+           return yaml.safe_load(f)
+   ```
+
+☐ 6.2. Implement logging (drone_stack/utils/logging_utils.py)
+   
+   ```python
+   import pandas as pd
+   import os
+   from datetime import datetime
+   
+   class FlightLogger:
+       def __init__(self, log_dir):
+           timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+           self.directory = os.path.join(log_dir, f'flight_{timestamp}')
+           os.makedirs(self.directory, exist_ok=True)
+           
+           self.data = {
+               'time': [],
+               'des_x': [], 'des_y': [], 'des_z': [],
+               'est_x': [], 'est_y': [], 'est_z': [],
+               'roll_rate': [], 'pitch_rate': [], 'yaw_rate': [], 'throttle': []
+           }
+       
+       def log(self, t, desired, estimated, control):
+           self.data['time'].append(t)
+           self.data['des_x'].append(desired.position[0])
+           # ... log everything
+       
+       def save(self):
+           df = pd.DataFrame(self.data)
+           df.to_csv(os.path.join(self.directory, 'flight_log.csv'))
+   ```
+
+☐ 6.3. Write main orchestrator (scripts/run_simulation.py)
+   See the template from implementation_starter_template.txt
+   
+   Key structure:
+   - Load all configs
+   - Initialize all components
+   - Plan trajectory once at start
+   - Start IMU and camera threads
+   - Run control loop at 100 Hz
+   - Log everything
+   - Clean shutdown
+
+☐ 6.4. TEST: Full end-to-end flight
+
+CHECKPOINT: Can you complete a full racing lap autonomously?
+
+
+═══════════════════════════════════════════════════════════════════
+PHASE 7: CAMERA & VISUAL ODOMETRY (Days 18-21) - OPTIONAL
+═══════════════════════════════════════════════════════════════════
+
+This is optional for competition - you can use ground truth state from AirSim!
+Only implement if you need true vision-based state estimation.
+
+☐ 7.1. Implement feature tracking (drone_stack/estimation/visual_odometry/feature_tracker.py)
+☐ 7.2. Implement pose estimation from features
+☐ 7.3. Add camera update to EKF
+☐ 7.4. Create camera thread
+☐ 7.5. TEST: Compare VIO vs ground truth
+
+
+═══════════════════════════════════════════════════════════════════
+PHASE 8: RACING OPTIMIZATION (Days 22-28)
+═══════════════════════════════════════════════════════════════════
+
+Goal: Make it fast!
+
+☐ 8.1. Increase trajectory aggression
+   - Increase avg_speed: 3 → 5 → 7 m/s
+   - Test at each level
+
+☐ 8.2. Tune controller gains for racing
+   - Increase Kp: 6 → 7 → 8
+   - Decrease Kd: 2.5 → 2.0
+   - Increase Kp_att: 10 → 12 → 15
+
+☐ 8.3. Add Numba optimization to trajectory sampling
+   Already done if you used @jit decorators!
+
+☐ 8.4. Profile and optimize
+   ```python
+   import cProfile
+   cProfile.run('main()', 'profile_stats')
+   ```
+
+☐ 8.5. Stress test with competition track
+   - Load competition_track.yaml
+   - Fly 10 laps
+   - Measure success rate and time
+
+☐ 8.6. Add safety features
+   - Collision detection
+   - Emergency hover
+   - Battery monitoring (if available)
+
+CHECKPOINT: Can you complete a lap in under X seconds reliably?
+
+
+═══════════════════════════════════════════════════════════════════
+PHASE 9: HARDWARE PREPARATION (Days 29-35)
+═══════════════════════════════════════════════════════════════════
+
+☐ 9.1. Implement hardware interface (drone_stack/hardware/mavros_drone.py)
+☐ 9.2. Create hardware test script (scripts/run_hardware.py)
+☐ 9.3. Test with conservative gains (0.5x simulation gains)
+☐ 9.4. Progressive gain tuning
+☐ 9.5. Hardware stress test
+
+
+═══════════════════════════════════════════════════════════════════
+CRITICAL SUCCESS FACTORS
+═══════════════════════════════════════════════════════════════════
+
+1. TEST EARLY, TEST OFTEN
+   - After each phase, verify it works before moving on
+   - Don't accumulate bugs
+
+2. START SIMPLE
+   - PID before geometric control
+   - Ground truth state before estimation
+   - Straight lines before aggressive racing
+
+3. LOG EVERYTHING
+   - You can't fix what you can't measure
+   - Plot data after every test
+
+4. VERSION CONTROL
+   - Commit after each working feature
+   - Tag stable versions
+
+5. SAFETY FIRST
+   - Always test in simulation first
+   - Start real hardware tests with conservative gains
+   - Have emergency stop ready
+
+
+═══════════════════════════════════════════════════════════════════
+DEPENDENCY GRAPH
+═══════════════════════════════════════════════════════════════════
+
+Phase 0 (Setup)
+    ↓
+Phase 1 (Basic Flying)
+    ├─→ Phase 2 (Gates) ──────┐
+    ├─→ Phase 3 (Estimation) ─┤
+    └─→ Phase 4 (Controller) ─┤
+                               ↓
+                         Phase 5 (Planning)
+                               ↓
+                         Phase 6 (Integration)
+                               ↓
+                         Phase 7 (Vision - Optional)
+                               ↓
+                         Phase 8 (Optimization)
+                               ↓
+                         Phase 9 (Hardware)
+
+
+You MUST complete phases in order. Do not skip ahead.
+Each phase builds on the previous one.
+
+Total estimated time: 6 weeks for full competition-ready stack.
+Can be compressed to 4 weeks if you skip visual odometry (use ground truth).
